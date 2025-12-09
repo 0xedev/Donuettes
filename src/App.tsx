@@ -8,7 +8,7 @@ import { Button } from "./components/ui/Button";
 
 function App() {
   const [activeTab, setActiveTab] = useState<"community" | "donettes">(
-    "community"
+    "donettes"
   );
   const [hasPromptedAdd, setHasPromptedAdd] = useState(false);
   const { isConnected } = useAccount();
