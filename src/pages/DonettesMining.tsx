@@ -5,6 +5,10 @@ import {
   useReadContract,
   useSendCalls,
   useCallsStatus,
+  useWriteContract,
+  useWaitForTransactionReceipt,
+  useCapabilities,
+  useChainId,
 } from "wagmi";
 import {
   Address,
@@ -30,7 +34,13 @@ type SnapshotEntry = {
 
 export function DonettesMining() {
   const { address } = useAccount();
+  const chainId = useChainId();
+  const { data: capabilities } = useCapabilities();
   const { sendCalls, data: callsId } = useSendCalls();
+
+  useEffect(() => {
+    console.log("Wallet Capabilities:", capabilities);
+  }, [capabilities]);
 
   const { data: callsStatus } = useCallsStatus({
     id: callsId?.id as string,
@@ -77,13 +87,49 @@ export function DonettesMining() {
     },
   });
 
+  // Fetch allowance
+  const { data: allowance, refetch: refetchAllowance } = useReadContract({
+    address: DonuetteTokenAddress,
+    abi: erc20Abi,
+    functionName: "allowance",
+    args: [address as Address, DonuetteV2Address],
+    query: {
+      enabled: !!address,
+    },
+  });
+
+  // Standard Write Contract
+  const {
+    writeContract,
+    data: writeHash,
+    isPending: isWritePending,
+  } = useWriteContract();
+
+  const {
+    isLoading: isTransactionConfirming,
+    isSuccess: isTransactionConfirmed,
+  } = useWaitForTransactionReceipt({
+    hash: writeHash,
+  });
+
   useEffect(() => {
-    if (isConfirmed) {
+    if (isConfirmed || isTransactionConfirmed) {
       refetchClaimStatus();
       refetchBalance();
-      setClaimAmount(""); // Reset input after successful claim
+      refetchAllowance();
+      if (isTransactionConfirmed) {
+        // Only reset if it was a claim transaction (hard to track exactly, but safe to reset)
+        // Actually, if it was approve, we don't want to reset amount.
+        // But for now let's keep it simple.
+      }
     }
-  }, [isConfirmed, refetchClaimStatus, refetchBalance]);
+  }, [
+    isConfirmed,
+    isTransactionConfirmed,
+    refetchClaimStatus,
+    refetchBalance,
+    refetchAllowance,
+  ]);
 
   const [claimAmount, setClaimAmount] = useState("");
 
@@ -110,7 +156,44 @@ export function DonettesMining() {
     }
   };
 
-  const handleClaim = () => {
+  const handleApprove = () => {
+    if (!claimAmount) return;
+    try {
+      const amountToApprove = parseEther(claimAmount);
+      writeContract({
+        address: DonuetteTokenAddress,
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [DonuetteV2Address, amountToApprove],
+      });
+    } catch (e) {
+      console.error("Error approving", e);
+    }
+  };
+
+  const handleStandardClaim = () => {
+    if (!userEntry || !claimAmount) return;
+    try {
+      const amountToClaim = parseEther(claimAmount);
+      const totalAllocation = BigInt(userEntry.balance);
+
+      writeContract({
+        address: DonuetteV2Address,
+        abi: DonuetteV2ABI,
+        functionName: "claim",
+        args: [
+          amountToClaim,
+          totalAllocation,
+          userEntry.proof as `0x${string}`[],
+        ],
+      });
+      setClaimAmount("");
+    } catch (e) {
+      console.error("Error claiming", e);
+    }
+  };
+
+  const handleBatchClaim = () => {
     if (!userEntry || !claimAmount) return;
 
     try {
@@ -245,7 +328,7 @@ export function DonettesMining() {
                     {parseFloat(
                       formatEther(BigInt(userEntry.balance))
                     ).toLocaleString()}{" "}
-                    DNTV2
+                    DonuetteV2
                   </p>
                 </div>
                 <div className="w-full bg-gray-200 rounded-full h-2.5">
@@ -303,13 +386,46 @@ export function DonettesMining() {
                     ))}
                   </div>
 
-                  <button
-                    onClick={handleClaim}
-                    disabled={!claimAmount || parseFloat(claimAmount) <= 0}
-                    className="w-full py-3 px-4 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-bold rounded-lg transition-colors shadow-lg shadow-purple-200"
-                  >
-                    Claim Tokens
-                  </button>
+                  <div className="flex flex-col gap-2">
+                    {allowance !== undefined &&
+                    claimAmount &&
+                    allowance < parseEther(claimAmount) ? (
+                      capabilities?.[chainId]?.atomicBatch?.supported ? (
+                        <button
+                          onClick={handleBatchClaim}
+                          disabled={isWritePending || isTransactionConfirming}
+                          className="w-full py-3 px-4 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-bold rounded-lg transition-colors shadow-lg shadow-purple-200"
+                        >
+                          Smart Claim (Approve + Claim)
+                        </button>
+                      ) : (
+                        <button
+                          onClick={handleApprove}
+                          disabled={isWritePending || isTransactionConfirming}
+                          className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-bold rounded-lg transition-colors shadow-lg shadow-blue-200"
+                        >
+                          {isWritePending || isTransactionConfirming
+                            ? "Approving..."
+                            : "1. Approve"}
+                        </button>
+                      )
+                    ) : (
+                      <button
+                        onClick={handleStandardClaim}
+                        disabled={
+                          !claimAmount ||
+                          parseFloat(claimAmount) <= 0 ||
+                          isWritePending ||
+                          isTransactionConfirming
+                        }
+                        className="w-full py-3 px-4 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-bold rounded-lg transition-colors shadow-lg shadow-purple-200"
+                      >
+                        {isWritePending || isTransactionConfirming
+                          ? "Claiming..."
+                          : "Claim Tokens"}
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
